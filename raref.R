@@ -1,19 +1,37 @@
 require(mvabund)
+require(FD)
+require(reshape)
+require(dplyr)
+require(foreach)
+require(abind)
+
+source("code/Chao_2014_FD_Hill_noBeta.R") # FD Hill number code from Chiu and Chao (2014)
+
 data(antTraits)
 
-# randomly assign origin to ant species
+ssm <- as.matrix(antTraits$abund)
+rownames(ssm) <- rownames(antTraits$abund)
 
+stm <- as.matrix(antTraits$traits[,c(1,5)])
+
+# randomly assign origin to ant species
+set.seed(101)
+origin <- 
+  data.frame(Species = colnames(ssm),
+             Exotic = sample(c(0, 1), ncol(ssm), replace = TRUE))
 
 
 # Species-species matrix filled with trait distances
 # Using Gower's distance, but see Chiu & Chao (2014) PLoS ONE for possible downside (non-ultrametric)
-D.all <- gowdis(stm.all)
-if (is.euclid(D.all) == FALSE) D.all <- cailliez(D.all)
-D.all <- as.matrix(D.all)
-D <- lapply(ssm.list, function(mat) {
-  temp <- D.all[colnames(mat), colnames(mat)]
-  return(temp)
-})
+get.D <- function(traits) {
+  D <- gowdis(traits)
+  if (is.euclid(D) == FALSE) D <- cailliez(D)
+  D <- as.matrix(D)
+  return(D)
+}
+
+D <- get.D(stm)
+
 
 ## First, decide on the extrapolation size
 ## look at the distribution of total abundance across sites
@@ -23,12 +41,14 @@ D <- lapply(ssm.list, function(mat) {
 ## previously I didn't remove them, resulting in very low extrapolation number
 ## let's use the 10th percentile and remove extremely sparse sites
 ## so that we can extrapolate more and do a more "reliable" rarefaction--extrapolation
-total.abun.lower.lim <- floor(as.numeric(quantile(rowSums(ssm.all), 0.1)))
+total.abun.lower.lim <- floor(as.numeric(quantile(rowSums(ssm), 0.1)))
 raref.size <- 3 * total.abun.lower.lim
 # hist(rowSums(ssm.all)); median(rowSums(ssm.all))
-sparse.plots <- names(which(rowSums(ssm.all) < total.abun.lower.lim))
+sparse.plots <- names(which(rowSums(ssm) < total.abun.lower.lim))
 # remove sparse plots
-ssm.list <- lapply(ssm.list, function(x) x[setdiff(rownames(x), sparse.plots), ])
+ssm <- ssm[setdiff(rownames(ssm), sparse.plots), ]
+
+n.raref <- 100
 
 # species rarefaction/extrapolation
 # Sample n = raref.size individuals from observed assemblages
@@ -38,7 +58,7 @@ acomb <- function(...) abind(..., along = 4)
 SDFD.raref.raw <- 
   foreach (n = 1:n.raref, .combine = "acomb") %dopar% {
     tmp <- 
-      apply(ssm.list$T, 1, function(x) {
+      apply(ssm, 1, function(x) {
         # sample individuals from each plot with replacement
         sample(rep(names(x), x), raref.size, replace = TRUE)
       })
@@ -46,7 +66,7 @@ SDFD.raref.raw <-
       reshape::melt(tmp) %>% 
       rename(Plot = X2,
              Species = value) %>% 
-      left_join(select(use_spp, Species:Exotic))
+      left_join(origin, by = "Species")
     
     # rarefied communities
     ssm.tmp.T <- with(tmp, tapply(Species, list(Species, Plot), length, default = 0))
@@ -65,7 +85,7 @@ SDFD.raref.raw <-
                 SD1 = exp(diversity(t(x), index = "shannon")),
                 SD2 = diversity(t(x), index = "invsimpson"))
         # FD
-        D.tmp <- D$T[rownames(x), rownames(x)]
+        D.tmp <- D[rownames(x), rownames(x)]
         FD.raref.raw <- 
           do.call(cbind, 
                   lapply(c(0, 1, 2), function(q) {Func2014(D.tmp, x, q = q)$FuncD}))
